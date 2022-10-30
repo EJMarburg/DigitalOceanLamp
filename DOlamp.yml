@@ -1,0 +1,90 @@
+---
+
+- hosts: localhost
+  vars:
+    digital_ocean_token: <Your Digital Ocean Token>
+    droplet_size: s-1vcpu-1gb
+    droplet_region: nyc1
+    droplet_image: ubuntu-18-04-x64
+  tasks:
+  
+  - name: Give DigitalOcean Public SSH Key
+    digital_ocean_sshkey:
+      name: "DO Test"
+      oauth_token: "{{ digital_ocean_token }}"
+      ssh_pub_key: "{{lookup('file', '~/.ssh/id_rsa.pub') }}"
+      state: present
+    register: sshkey_result
+
+  - name: Create Droplet
+    digital_ocean_droplet:
+      name: "{{ item }}"
+      oauth_token: "{{ digital_ocean_token }}"
+      size: "{{ droplet_size }}"
+      region: "{{ droplet_region }}"
+      image: "{{ droplet_image }}"
+      wait_timeout: 600
+      unique_name: yes
+      ssh_keys: ["{{ sshkey_result.data.ssh_key.id }}"]      
+      state: present
+    with_inventory_hostnames:
+      - webservers
+    register: droplet_result
+
+  - name: Save IP for later use
+    become: yes
+    lineinfile:
+      path: /etc/hosts
+      regexp: '.*{{ item.data.droplet.name }}$'
+      line: "{{ item.data.ip_address }}  {{ item.data.droplet.name }}"
+    with_items: "{{ droplet_result.results }}"
+
+  - name: Wait for SSH to come up
+    wait_for:
+      host: "{{ item.data.ip_address }}"
+      port: 22
+      state: started
+    with_items: "{{ droplet_result.results }}"
+- hosts: webservers
+  remote_user: root
+  become: yes
+  gather_facts: yes
+
+  tasks:
+
+
+  - name: Install prerequisites
+    apt: name={{ item }} update_cache=yes state=latest force_apt_get=yes
+    loop: [ 'aptitude' ]
+
+ 
+  - name: Install Apache and PHP Packages
+    apt: name={{ item }} update_cache=yes state=latest
+    loop: [ 'apache2', 'php', 'php-mysql', 'libapache2-mod-php' ]
+     
+  - name: Removing old html directory from var
+    file:
+      path: /var/www/html/index.html
+      state: absent
+
+  - name: Copy new webpage
+    copy:
+      src: index.html
+      dest: /var/www/html
+
+
+  - name: "UFW - Allow HTTP on port 80"
+    ufw:
+      rule: allow
+      port: 80
+      proto: tcp 
+
+  - name: Reload Apache
+    service:
+      name: apache2
+      state: reloaded
+
+  - name: Restart Apache
+    service:
+      name: apache2
+      state: restarted
